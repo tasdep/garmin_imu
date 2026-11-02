@@ -58,7 +58,8 @@ def main():
 
     imu = load_imu(args.fit)
     t, a = imu["accelerometer_data"]
-    fs = (len(t) - 1) / (t[-1] - t[0])
+    # Median spacing: pauses leave gaps that would skew a count/span estimate.
+    fs = 1 / np.median(np.diff(t))
     end = args.end if args.end is not None else t[-1]
     keep = (t >= args.start) & (t <= end)
     t, a = t[keep], a[keep]
@@ -93,7 +94,7 @@ def main():
     if gyro:
         tg, g = gyro
         gk = (tg >= args.start) & (tg <= end)
-        gfs = (len(tg) - 1) / (tg[-1] - tg[0])
+        gfs = 1 / np.median(np.diff(tg))
         for i, c in enumerate("xyz"):
             ax[3].plot(tg[gk], lowpass(g[gk, i], 5, gfs), lw=0.8, label=f"{c} (5 Hz low-pass)")
         ax[3].set_title(f"Gyro rate ({gfs:.1f} Hz)")
