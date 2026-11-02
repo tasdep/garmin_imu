@@ -322,21 +322,26 @@ class Rower {
     }
 
     function startRecording() as Void {
-        var logger = new SensorLogging.SensorLogger({:accelerometer => {:enabled => true}});
+        // Gyro is logged for offline analysis only (roll/pitch/yaw rate); the
+        // live processing stays accel-only.
+        var logger = new SensorLogging.SensorLogger({
+            :accelerometer => {:enabled => true},
+            :gyroscope => {:enabled => true}
+        });
         var session = ActivityRecording.createSession({
             :name => "Row IMU",
             :sport => Activity.SPORT_ROWING,
             :sensorLogger => logger
         });
-        // nativeNum mirrors Garmin's own fields (FIT profile: record.cadence = 4,
-        // session.total_cycles = 10, session.avg_cadence = 18) so Connect can
-        // treat them as rowing stroke rate / strokes.
-        _srField = session.createField("stroke_rate", 0, FitContributor.DATA_TYPE_UINT8,
-            {:mesgType => FitContributor.MESG_TYPE_RECORD, :units => "spm", :nativeNum => 4});
-        _strokesField = session.createField("total_strokes", 1, FitContributor.DATA_TYPE_UINT32,
-            {:mesgType => FitContributor.MESG_TYPE_SESSION, :units => "strokes", :nativeNum => 10});
-        _avgSrField = session.createField("avg_stroke_rate", 2, FitContributor.DATA_TYPE_UINT8,
-            {:mesgType => FitContributor.MESG_TYPE_SESSION, :units => "spm", :nativeNum => 18});
+        // The firmware fills native cadence/strokes for SPORT_ROWING sessions
+        // (seen in the 2026-11-02 21:36 test), so these stay separate IMU fields
+        // for comparison rather than mirroring native ones.
+        _srField = session.createField("imu_stroke_rate", 0, FitContributor.DATA_TYPE_UINT8,
+            {:mesgType => FitContributor.MESG_TYPE_RECORD, :units => "spm"});
+        _strokesField = session.createField("imu_total_strokes", 1, FitContributor.DATA_TYPE_UINT32,
+            {:mesgType => FitContributor.MESG_TYPE_SESSION, :units => "strokes"});
+        _avgSrField = session.createField("imu_avg_stroke_rate", 2, FitContributor.DATA_TYPE_UINT8,
+            {:mesgType => FitContributor.MESG_TYPE_SESSION, :units => "spm"});
         _strokes = 0.0;
         _srSum = 0.0;
         _srSecs = 0;

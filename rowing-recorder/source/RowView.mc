@@ -19,14 +19,6 @@ class RowView extends WatchUi.View {
         _rower = rower;
     }
 
-    function onShow() as Void {
-        _rower.start();
-    }
-
-    function onHide() as Void {
-        _rower.stop();
-    }
-
     function nextPage(step as Number) as Void {
         page = (page + step + PAGES) % PAGES;
         WatchUi.requestUpdate();
@@ -70,9 +62,10 @@ class RowView extends WatchUi.View {
         var speed = info != null ? info.currentSpeed : null;
         text(dc, cx / 2 + 15, 195, label, lc, "/500m");
         text(dc, cx / 2 + 15, 220, mid, Graphics.COLOR_WHITE, splitText(speed));
-        var sr = _rower.strokeRate;
+        // The firmware's own rowing stroke rate, as on the native data screen.
+        var cad = info != null ? info.currentCadence : null;
         text(dc, cx + cx / 2 - 15, 195, label, lc, "SPM");
-        text(dc, cx + cx / 2 - 15, 220, mid, Graphics.COLOR_WHITE, sr == null ? "--" : sr.format("%.0f"));
+        text(dc, cx + cx / 2 - 15, 220, mid, Graphics.COLOR_WHITE, cad == null || cad == 0 ? "--" : cad.toString());
 
         // Distance | heart rate
         var dist = info != null ? info.elapsedDistance : null;
@@ -137,7 +130,7 @@ class RowView extends WatchUi.View {
         drawStatus(dc, cx, 22);
         var sr = r.strokeRate;
         text(dc, cx, 62, Graphics.FONT_TINY, Graphics.COLOR_WHITE,
-            timerText(info) + "   " + (sr == null ? "--" : sr.format("%.0f")) + " spm");
+            timerText(info) + "   " + (sr == null ? "--" : sr.format("%.0f")) + " imu spm");
         var smooth = r.smoothHz == 0 ? "raw" : r.smoothHz + " Hz";
         var msg = r.rate == 0 && r.err.length() > 0 ? r.err : r.batchN + " Hz  " + smooth + "  grid 0.5 g";
         text(dc, cx, h - 80, Graphics.FONT_XTINY, Graphics.COLOR_LT_GRAY, msg);

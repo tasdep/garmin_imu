@@ -5,14 +5,26 @@ import Toybox.Lang;
 import Toybox.WatchUi;
 
 class RowApp extends Application.AppBase {
+    private var _rower as Rower;
+
     function initialize() {
         AppBase.initialize();
+        _rower = new Rower();
+    }
+
+    // Sensors run for the whole app, not per view: menus hide the main view,
+    // which used to restart the listener and wipe the plot/stroke-rate buffers.
+    function onStart(state as Dictionary?) as Void {
+        _rower.start();
+    }
+
+    function onStop(state as Dictionary?) as Void {
+        _rower.stop();
     }
 
     function getInitialView() {
-        var rower = new Rower();
-        var view = new RowView(rower);
-        return [view, new RowDelegate(rower, view)];
+        var view = new RowView(_rower);
+        return [view, new RowDelegate(_rower, view)];
     }
 }
 
