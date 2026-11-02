@@ -4,6 +4,7 @@ import Toybox.Application;
 import Toybox.Graphics;
 import Toybox.Lang;
 import Toybox.Sensor;
+import Toybox.System;
 import Toybox.WatchUi;
 
 class ProbeApp extends Application.AppBase {
@@ -55,6 +56,7 @@ class ProbeView extends WatchUi.View {
                 _err += " / " + e2.getErrorMessage();
             }
         }
+        logStatus();
     }
 
     function onHide() as Void {
@@ -71,7 +73,31 @@ class ProbeView extends WatchUi.View {
         if (g != null) {
             _gyro = describe(g.x.size(), g.timestamp);
         }
+        // A few batches are enough to characterise the rate; keep the log small.
+        if (_batches <= 5) {
+            logStatus();
+        }
         WatchUi.requestUpdate();
+    }
+
+    private function statusLines() as Array<String> {
+        return [
+            "max " + _maxRate + " a" + _maxAccel + " g" + _maxGyro,
+            "logger " + ((Toybox has :SensorLogging) ? "yes" : "no"),
+            _mode + " #" + _batches,
+            "A " + _accel,
+            "G " + _gyro,
+            _err
+        ];
+    }
+
+    // Sideloaded apps append println output to GARMIN/Apps/LOGS/<PRG name>.TXT
+    // if that file exists, which lets us read the results over USB.
+    private function logStatus() as Void {
+        var lines = statusLines();
+        for (var i = 0; i < lines.size(); i++) {
+            System.println(lines[i]);
+        }
     }
 
     // Samples per batch plus the rate implied by the per-sample timestamps.
@@ -86,14 +112,7 @@ class ProbeView extends WatchUi.View {
     function onUpdate(dc as Graphics.Dc) as Void {
         dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_BLACK);
         dc.clear();
-        var lines = [
-            "max " + _maxRate + " a" + _maxAccel + " g" + _maxGyro,
-            "logger " + ((Toybox has :SensorLogging) ? "yes" : "no"),
-            _mode + " #" + _batches,
-            "A " + _accel,
-            "G " + _gyro,
-            _err
-        ];
+        var lines = statusLines();
         var y = 80;
         for (var i = 0; i < lines.size(); i++) {
             dc.drawText(dc.getWidth() / 2, y, Graphics.FONT_XTINY, lines[i], Graphics.TEXT_JUSTIFY_CENTER);
