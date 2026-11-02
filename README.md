@@ -2,6 +2,12 @@
 
 Raw IMU recording and live boat-acceleration display for rowing on a Garmin Forerunner 965 (Connect IQ).
 
+## Web analyzer
+
+`docs/` is a static, client-side app (GitHub Pages) for exploring a Row IMU `.fit` file: interactive plots, display filters, Madgwick orientation (roll/pitch/yaw rate), stroke detection, stroke overlays, consistency and roll-balance stats, GPS track, and per-stroke CSV export. Files are parsed in the browser and never uploaded.
+
+Run it locally with `python3 -m http.server 8765` from the repo root, then open http://127.0.0.1:8765/docs/.
+
 ## FR965 findings (imu-probe, 2026-11-02, firmware 29.05)
 
 - `Sensor.getMaxSampleRate()` = 50; `getMaxSampleRateForSensorType` = 100 for accel and gyro.
