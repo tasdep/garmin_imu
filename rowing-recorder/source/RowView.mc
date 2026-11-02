@@ -1,200 +1,103 @@
-// Live boat-acceleration plot plus a FIT recording with raw accelerometer
-// samples (SensorLogger) for offline analysis.
+// Pages (UP/DOWN): rowing data, live boat-acceleration plot, clock.
 import Toybox.Activity;
-import Toybox.ActivityRecording;
-import Toybox.Application;
 import Toybox.Graphics;
 import Toybox.Lang;
-import Toybox.Math;
 import Toybox.Position;
-import Toybox.Sensor;
-import Toybox.SensorLogging;
 import Toybox.System;
 import Toybox.WatchUi;
 
 class RowView extends WatchUi.View {
-    private const WINDOW_S = 6;
-    // Gravity is tracked with a slow EMA; strokes are ~2 s, so 10 s keeps the
-    // stroke signal out of the gravity estimate.
-    private const GRAVITY_TAU_S = 10;
+    const PAGES = 3;
     // Shell acceleration spans roughly -0.6..+0.4 g, so +-600 mg fills the plot.
     private const RANGE_MG = 600.0;
 
-    private var _rate as Number = 0;
-    private var _batchN as Number = 0;
-    private var _alpha as Float = 0.0;
-    private var _g as Array<Float>? = null;
-    private var _dx as Array<Float> = [];
-    private var _dy as Array<Float> = [];
-    private var _dz as Array<Float> = [];
-    private var _head as Number = 0;
-    private var _count as Number = 0;
-    // Unit vector of the dominant motion direction (assumed surge).
-    private var _axis as Array<Float> = [1.0, 0.0, 0.0];
-    private var _sign as Number = 1;
-    private var _err as String = "";
+    private var _rower as Rower;
+    var page as Number = 0;
 
-    private var _session as ActivityRecording.Session? = null;
-    private var _logger as SensorLogging.SensorLogger? = null;
-
-    function initialize() {
+    function initialize(rower as Rower) {
         View.initialize();
-        var s = Application.Storage.getValue("sign");
-        if (s instanceof Number) {
-            _sign = s;
-        }
+        _rower = rower;
     }
 
     function onShow() as Void {
-        Position.enableLocationEvents(Position.LOCATION_CONTINUOUS, method(:onPosition));
-        // The probe saw getMaxSampleRate() = 50 but a per-sensor max of 100; try 100 first.
-        if (!startListener(100) && !startListener(50)) {
-            System.println("listener failed: " + _err);
-        }
+        _rower.start();
     }
 
     function onHide() as Void {
-        Sensor.unregisterSensorDataListener();
-        Position.enableLocationEvents(Position.LOCATION_DISABLE, method(:onPosition));
+        _rower.stop();
     }
 
-    function onPosition(info as Position.Info) as Void {
-    }
-
-    private function startListener(rate as Number) as Boolean {
-        try {
-            Sensor.registerSensorDataListener(method(:onData), {
-                :period => 1,
-                :accelerometer => {:enabled => true, :sampleRate => rate}
-            });
-        } catch (e) {
-            _err = "" + e.getErrorMessage();
-            return false;
-        }
-        _rate = rate;
-        _alpha = 1.0 / (rate * GRAVITY_TAU_S);
-        var len = rate * WINDOW_S;
-        _dx = new Array<Float>[len];
-        _dy = new Array<Float>[len];
-        _dz = new Array<Float>[len];
-        for (var i = 0; i < len; i++) {
-            _dx[i] = 0.0;
-            _dy[i] = 0.0;
-            _dz[i] = 0.0;
-        }
-        _head = 0;
-        _count = 0;
-        System.println("listener requested " + rate + " Hz");
-        return true;
-    }
-
-    function onData(data as Sensor.SensorData) as Void {
-        var a = data.accelerometerData;
-        if (a == null) {
-            return;
-        }
-        var n = a.x.size();
-        if (_batchN == 0) {
-            System.println("first batch n=" + n);
-        }
-        _batchN = n;
-        var len = _dx.size();
-        for (var i = 0; i < n; i++) {
-            var x = a.x[i].toFloat();
-            var y = a.y[i].toFloat();
-            var z = a.z[i].toFloat();
-            var g = _g;
-            if (g == null) {
-                g = [x, y, z];
-                _g = g;
-            }
-            g[0] += (x - g[0]) * _alpha;
-            g[1] += (y - g[1]) * _alpha;
-            g[2] += (z - g[2]) * _alpha;
-            _dx[_head] = x - g[0];
-            _dy[_head] = y - g[1];
-            _dz[_head] = z - g[2];
-            _head = (_head + 1) % len;
-            _count++;
-        }
-        updateAxis();
-        WatchUi.requestUpdate();
-    }
-
-    // Principal axis of the dynamic acceleration over the window (power
-    // iteration on the 3x3 covariance), so the mount orientation doesn't matter.
-    private function updateAxis() as Void {
-        var len = _count < _dx.size() ? _count : _dx.size();
-        var xx = 0.0, yy = 0.0, zz = 0.0, xy = 0.0, xz = 0.0, yz = 0.0;
-        for (var i = 0; i < len; i++) {
-            var x = _dx[i];
-            var y = _dy[i];
-            var z = _dz[i];
-            xx += x * x; yy += y * y; zz += z * z;
-            xy += x * y; xz += x * z; yz += y * z;
-        }
-        var v = _axis;
-        for (var k = 0; k < 8; k++) {
-            var wx = xx * v[0] + xy * v[1] + xz * v[2];
-            var wy = xy * v[0] + yy * v[1] + yz * v[2];
-            var wz = xz * v[0] + yz * v[1] + zz * v[2];
-            var norm = Math.sqrt(wx * wx + wy * wy + wz * wz);
-            if (norm < 1.0) {
-                return; // no motion yet: keep the previous axis
-            }
-            v = [wx / norm, wy / norm, wz / norm];
-        }
-        // An eigenvector's sign is arbitrary; keep it continuous with the last one.
-        if (v[0] * _axis[0] + v[1] * _axis[1] + v[2] * _axis[2] < 0) {
-            v = [-v[0], -v[1], -v[2]];
-        }
-        _axis = v;
-    }
-
-    function flipSign() as Void {
-        _sign = -_sign;
-        Application.Storage.setValue("sign", _sign);
-        WatchUi.requestUpdate();
-    }
-
-    function isRecording() as Boolean {
-        return _session != null;
-    }
-
-    function toggleRecording() as Void {
-        var session = _session;
-        if (session == null) {
-            _logger = new SensorLogging.SensorLogger({:accelerometer => {:enabled => true}});
-            session = ActivityRecording.createSession({
-                :name => "Row IMU",
-                :sport => Activity.SPORT_ROWING,
-                :sensorLogger => _logger
-            });
-            session.start();
-            _session = session;
-        } else {
-            session.stop();
-            session.save();
-            var stats = (_logger as SensorLogging.SensorLogger).getStats();
-            if (stats != null) {
-                System.println("logged " + stats.sampleCount + " samples over " + stats.samplePeriod + " s");
-            }
-            _session = null;
-            _logger = null;
-        }
+    function nextPage(step as Number) as Void {
+        page = (page + step + PAGES) % PAGES;
         WatchUi.requestUpdate();
     }
 
     function onUpdate(dc as Graphics.Dc) as Void {
+        dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_BLACK);
+        dc.clear();
+        var info = Activity.getActivityInfo();
+        if (page == 0) {
+            drawData(dc, info);
+        } else if (page == 1) {
+            drawPlot(dc, info);
+        } else {
+            drawClock(dc, info);
+        }
+    }
+
+    private function drawData(dc as Graphics.Dc, info as Activity.Info?) as Void {
+        var w = dc.getWidth();
+        var h = dc.getHeight();
+        var cx = w / 2;
+        var label = Graphics.FONT_XTINY;
+        var big = Graphics.FONT_NUMBER_MEDIUM;
+        var mid = Graphics.FONT_NUMBER_MILD;
+        var lc = Graphics.COLOR_LT_GRAY;
+        var just = Graphics.TEXT_JUSTIFY_CENTER;
+
+        drawStatus(dc, cx, 22);
+
+        // Timer
+        text(dc, cx, 70, label, lc, "TIMER");
+        text(dc, cx, 92, big, Graphics.COLOR_WHITE, timerText(info));
+
+        dc.setColor(Graphics.COLOR_DK_GRAY, Graphics.COLOR_TRANSPARENT);
+        dc.drawLine(0, 185, w, 185);
+        dc.drawLine(0, 300, w, 300);
+        dc.drawLine(cx, 185, cx, 300);
+
+        // Split /500 m | stroke rate
+        var speed = info != null ? info.currentSpeed : null;
+        text(dc, cx / 2 + 15, 195, label, lc, "/500m");
+        text(dc, cx / 2 + 15, 220, mid, Graphics.COLOR_WHITE, splitText(speed));
+        var sr = _rower.strokeRate;
+        text(dc, cx + cx / 2 - 15, 195, label, lc, "SPM");
+        text(dc, cx + cx / 2 - 15, 220, mid, Graphics.COLOR_WHITE, sr == null ? "--" : sr.format("%.0f"));
+
+        // Distance | heart rate
+        var dist = info != null ? info.elapsedDistance : null;
+        text(dc, cx / 2 + 35, 310, label, lc, "DIST m");
+        text(dc, cx / 2 + 35, 335, mid, Graphics.COLOR_WHITE, dist == null ? "0" : dist.format("%.0f"));
+        var hr = info != null ? info.currentHeartRate : null;
+        text(dc, cx + cx / 2 - 35, 310, label, lc, "HR");
+        text(dc, cx + cx / 2 - 35, 335, mid, Graphics.COLOR_RED, hr == null ? "--" : hr.toString());
+
+        // GPS quality, so you can wait for a fix before pressing START.
+        var q = Position.getInfo().accuracy;
+        var gpsColor = q >= Position.QUALITY_GOOD ? Graphics.COLOR_GREEN
+            : (q >= Position.QUALITY_POOR ? Graphics.COLOR_YELLOW : Graphics.COLOR_RED);
+        dc.setColor(gpsColor, Graphics.COLOR_TRANSPARENT);
+        dc.drawText(cx, h - 50, label, "GPS", just);
+    }
+
+    private function drawPlot(dc as Graphics.Dc, info as Activity.Info?) as Void {
         var w = dc.getWidth();
         var h = dc.getHeight();
         var cy = h / 2;
+        var cx = w / 2;
         var x0 = 40;
         var plotW = w - 2 * x0;
         var ky = (h * 0.32) / RANGE_MG;
-
-        dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_BLACK);
-        dc.clear();
 
         // Grid: 0 and +-0.5 g
         dc.setColor(Graphics.COLOR_DK_GRAY, Graphics.COLOR_TRANSPARENT);
@@ -203,20 +106,21 @@ class RowView extends WatchUi.View {
         dc.drawLine(x0, cy + 500 * ky, x0 + plotW, cy + 500 * ky);
 
         // Oldest to newest, left to right.
-        var len = _dx.size();
-        var n = _count < len ? _count : len;
+        var r = _rower;
+        var len = r.dx.size();
+        var n = r.count < len ? r.count : len;
         if (n > 1) {
             dc.setColor(Graphics.COLOR_GREEN, Graphics.COLOR_TRANSPARENT);
             dc.setPenWidth(2);
-            var ax = _axis[0] * _sign;
-            var ay = _axis[1] * _sign;
-            var az = _axis[2] * _sign;
-            var start = (_head - n + len) % len;
+            var ax = r.axis[0] * r.sign;
+            var ay = r.axis[1] * r.sign;
+            var az = r.axis[2] * r.sign;
+            var start = (r.head - n + len) % len;
             var px = 0;
             var py = 0;
             for (var i = 0; i < n; i++) {
                 var j = (start + i) % len;
-                var mg = _dx[j] * ax + _dy[j] * ay + _dz[j] * az;
+                var mg = r.dx[j] * ax + r.dy[j] * ay + r.dz[j] * az;
                 if (mg > RANGE_MG) { mg = RANGE_MG; }
                 if (mg < -RANGE_MG) { mg = -RANGE_MG; }
                 var qx = x0 + (i * plotW) / (len - 1);
@@ -230,19 +134,62 @@ class RowView extends WatchUi.View {
             dc.setPenWidth(1);
         }
 
-        var font = Graphics.FONT_XTINY;
-        var cx = w / 2;
-        if (_session != null) {
-            var ms = Activity.getActivityInfo().timerTime;
-            var s = ms == null ? 0 : ms / 1000;
-            dc.setColor(Graphics.COLOR_RED, Graphics.COLOR_TRANSPARENT);
-            dc.drawText(cx, 58, Graphics.FONT_TINY, "REC " + (s / 60) + ":" + (s % 60).format("%02d"), Graphics.TEXT_JUSTIFY_CENTER);
-        } else {
-            dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
-            dc.drawText(cx, 58, Graphics.FONT_TINY, "START to record", Graphics.TEXT_JUSTIFY_CENTER);
+        drawStatus(dc, cx, 22);
+        var sr = r.strokeRate;
+        text(dc, cx, 62, Graphics.FONT_TINY, Graphics.COLOR_WHITE,
+            timerText(info) + "   " + (sr == null ? "--" : sr.format("%.0f")) + " spm");
+        var smooth = r.smoothHz == 0 ? "raw" : r.smoothHz + " Hz";
+        var msg = r.rate == 0 && r.err.length() > 0 ? r.err : r.batchN + " Hz  " + smooth + "  grid 0.5 g";
+        text(dc, cx, h - 80, Graphics.FONT_XTINY, Graphics.COLOR_LT_GRAY, msg);
+    }
+
+    private function drawClock(dc as Graphics.Dc, info as Activity.Info?) as Void {
+        var cx = dc.getWidth() / 2;
+        var cy = dc.getHeight() / 2;
+        var t = System.getClockTime();
+        var hour = t.hour;
+        if (!System.getDeviceSettings().is24Hour) {
+            hour = hour % 12 == 0 ? 12 : hour % 12;
         }
-        dc.setColor(Graphics.COLOR_LT_GRAY, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(cx, h - 95, font, _batchN + " Hz  +-0.5 g grid", Graphics.TEXT_JUSTIFY_CENTER);
-        dc.drawText(cx, h - 65, font, _err.length() > 0 && _rate == 0 ? _err : "UP/DN flip", Graphics.TEXT_JUSTIFY_CENTER);
+        drawStatus(dc, cx, 22);
+        text(dc, cx, cy - 70, Graphics.FONT_NUMBER_THAI_HOT, Graphics.COLOR_WHITE,
+            hour + ":" + t.min.format("%02d"));
+        text(dc, cx, cy + 70, Graphics.FONT_MEDIUM, Graphics.COLOR_LT_GRAY, timerText(info));
+    }
+
+    private function drawStatus(dc as Graphics.Dc, cx as Number, y as Number) as Void {
+        var s = _rower.state;
+        if (s == RUNNING) {
+            text(dc, cx, y, Graphics.FONT_XTINY, Graphics.COLOR_RED, "REC");
+        } else if (s == PAUSED) {
+            text(dc, cx, y, Graphics.FONT_XTINY, Graphics.COLOR_YELLOW, "PAUSED");
+        } else {
+            text(dc, cx, y, Graphics.FONT_XTINY, Graphics.COLOR_LT_GRAY, "START to row");
+        }
+    }
+
+    private function text(dc as Graphics.Dc, x as Number, y as Number, font as Graphics.FontType,
+            color as Graphics.ColorType, s as String) as Void {
+        dc.setColor(color, Graphics.COLOR_TRANSPARENT);
+        dc.drawText(x, y, font, s, Graphics.TEXT_JUSTIFY_CENTER);
+    }
+
+    private function timerText(info as Activity.Info?) as String {
+        var ms = info != null ? info.timerTime : null;
+        var s = ms == null ? 0 : ms / 1000;
+        var hh = s / 3600;
+        var mm = (s / 60) % 60;
+        var ss = s % 60;
+        return hh > 0 ? hh + ":" + mm.format("%02d") + ":" + ss.format("%02d")
+            : mm + ":" + ss.format("%02d");
+    }
+
+    // Rowing split: time per 500 m at the current GPS speed.
+    private function splitText(speed as Float?) as String {
+        if (speed == null || speed < 0.5) {
+            return "--:--";
+        }
+        var s = (500 / speed).toNumber();
+        return (s / 60) + ":" + (s % 60).format("%02d");
     }
 }
