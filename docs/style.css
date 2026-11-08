@@ -88,6 +88,7 @@ button:hover { border-color: var(--accent); }
 .plot.tall { height: 520px; }
 .plot.xtall { height: 900px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.grid2 > * { min-width: 0; } /* else a wide Plotly svg stretches its column */
 @media (max-width: 800px) { .grid2 { grid-template-columns: 1fr; } }
 #map { height: 420px; border-radius: 8px; }
 .tablewrap { overflow: auto; max-height: 420px; }

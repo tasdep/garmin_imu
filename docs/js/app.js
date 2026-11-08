@@ -138,16 +138,31 @@ function fillSelection() {
   sel.add(new Option("Custom (zoomed)", "custom"));
 }
 
-function setSelection(t0, t1, fromZoom = false) {
+function setSelection(t0, t1) {
   S.sel = { t0, t1 };
-  if (!fromZoom) {
-    S.ignoreRelayout = true;
-    Plotly.relayout("overview", { "xaxis.range": [xOf(t0), xOf(t1)] }).finally(() => (S.ignoreRelayout = false));
-  } else {
-    $("sel").value = "custom";
-  }
-  fitSelection();
+  Plotly.relayout("overview", { "xaxis.range": [xOf(t0), xOf(t1)] });
+  renderSignals();
+  renderOrientation();
   renderSelection();
+}
+
+// Zooming or panning any time chart makes that range the selection; double-click resets.
+function linkZoom(id) {
+  const el = $(id);
+  el.removeAllListeners?.("plotly_relayout");
+  el.on("plotly_relayout", (ev) => {
+    const full = [S.t[0], S.t[S.t.length - 1]];
+    let rg;
+    if (ev["xaxis.autorange"]) rg = full;
+    else if (ev["xaxis.range"]) rg = ev["xaxis.range"].map(tOf);
+    else if (ev["xaxis.range[0]"] !== undefined) rg = [tOf(ev["xaxis.range[0]"]), tOf(ev["xaxis.range[1]"])];
+    else return;
+    const t0 = Math.max(full[0], rg[0]), t1 = Math.min(full[1], rg[1]);
+    // Our own relayouts echo the current selection back; ignore those.
+    if (Math.abs(t0 - S.sel.t0) < 0.01 && Math.abs(t1 - S.sel.t1) < 0.01) return;
+    $("sel").value = t0 === full[0] && t1 === full[1] ? "all" : "custom";
+    setSelection(t0, t1);
+  });
 }
 
 function selected() {
@@ -162,31 +177,18 @@ function renderAll() {
   renderOrientation();
   renderMap();
   renderSelection();
-  fitSelection();
+  ["overview", "signals", "orient", "trends", "rollSide"].forEach(linkZoom);
 }
 
-// Zoom the detail charts to the selection and fit their y axes to what's visible.
-function fitSelection() {
-  const { t0, t1 } = S.sel;
-  const [i0, i1] = rangeIdx(t0, t1);
+// Plot only the selected samples, so a zoom gets full resolution and y axes fit what's visible.
+function selSeries(y) {
+  const [i0, i1] = rangeIdx(S.sel.t0, S.sel.t1);
   const step = Math.max(1, Math.ceil((i1 - i0) / 50000));
-  const part = (x) => {
-    const out = [];
-    for (let i = i0; i < i1; i += step) out.push(x[i]);
-    return out;
-  };
-  const d = S.disp;
-  const fit = (id, arrays) => {
-    const upd = { "xaxis.range": [xOf(t0), xOf(t1)] };
-    arrays.forEach((x, k) => {
-      const r = x && robustRange(part(x));
-      if (r) upd[`yaxis${k ? k + 1 : ""}.range`] = r;
-    });
-    Plotly.relayout(id, upd);
-  };
-  fit("signals", [$("showRaw").checked ? S.frame.surge : d.surge, d.sway, d.heave]);
-  fit("orient", [d.roll, d.pitch, d.yaw]);
+  const part = [];
+  for (let i = i0; i < i1; i += step) part.push(y[i]);
+  return { ...series(S.t, y, i0, i1), range: robustRange(part) };
 }
+const selX = () => [xOf(S.sel.t0), xOf(S.sel.t1)];
 
 function renderSelection() {
   const sel = selected();
@@ -310,62 +312,51 @@ function renderOverview() {
   // A boat-mounted watch records no heart rate; drop the empty row then.
   const hasHr = r.hr.some((v) => v);
   Plotly.react("overview", traces, layout({
-    xaxis: ax({ type: "date", anchor: hasHr ? "y3" : "y2", rangeslider: { visible: true, thickness: 0.06 } }),
+    xaxis: ax({ type: "date", anchor: hasHr ? "y3" : "y2", range: selX(), rangeslider: { visible: true, thickness: 0.06 } }),
     yaxis: ax({ domain: hasHr ? [0.68, 1] : [0.52, 1], ...splitAxis(split) }),
     // Fixed rowing range so stray values (e.g. native cadence spikes) don't squash the plot.
     yaxis2: ax({ domain: hasHr ? [0.36, 0.64] : [0, 0.46], title: { text: "spm" }, range: [10, 55] }),
     yaxis3: ax({ domain: [0, 0.32], title: { text: "bpm" }, visible: hasHr }),
     shapes: S.act.laps.slice(1).map((l) => ({ type: "line", xref: "x", yref: "paper", x0: xOf(l.t0), x1: xOf(l.t0), y0: 0, y1: 1, line: { color: css("--muted"), width: 1, dash: "dot" } })),
   }), cfg);
-  const el = $("overview");
-  el.removeAllListeners?.("plotly_relayout");
-  el.on("plotly_relayout", (ev) => {
-    if (S.ignoreRelayout) return;
-    if (ev["xaxis.autorange"]) {
-      $("sel").value = "all";
-      setSelection(S.t[0], S.t[S.t.length - 1], true);
-      $("sel").value = "all";
-    } else if (ev["xaxis.range[0]"] || ev["xaxis.range"]) {
-      const rg = ev["xaxis.range"] ?? [ev["xaxis.range[0]"], ev["xaxis.range[1]"]];
-      setSelection(tOf(rg[0]), tOf(rg[1]), true);
-    }
-  });
 }
 
 function renderSignals() {
   const c = colors();
-  const { t } = S;
   const d = S.disp;
+  const raw = $("showRaw").checked;
+  const [surge, rawSurge, sway, heave] = [d.surge, raw && S.frame.surge, d.sway, d.heave].map((y) => y && selSeries(y));
+  const catches = S.strokes.filter((s) => s.t0 >= S.sel.t0 && s.t0 <= S.sel.t1);
   const traces = [];
-  if ($("showRaw").checked) traces.push({ ...series(t, S.frame.surge), name: "surge raw", line: { color: css("--muted"), width: 0.6 }, type: "scattergl", opacity: 0.6 });
+  if (raw) traces.push({ x: rawSurge.x, y: rawSurge.y, name: "surge raw", line: { color: css("--muted"), width: 0.6 }, type: "scattergl", opacity: 0.6 });
   traces.push(
-    { ...series(t, d.surge), name: "surge", line: { color: c[0], width: 1.2 }, type: "scattergl" },
-    { x: S.strokes.map((s) => xOf(s.t0)), y: S.strokes.map((s) => d.surge[s.i0]), name: "catch", mode: "markers", marker: { color: c[4], size: 6, symbol: "triangle-down" }, type: "scattergl" },
-    { ...series(t, d.sway), name: "sway", yaxis: "y2", line: { color: c[1], width: 1 }, type: "scattergl" },
-    { ...series(t, d.heave), name: "heave", yaxis: "y3", line: { color: c[2], width: 1 }, type: "scattergl" },
+    { x: surge.x, y: surge.y, name: "surge", line: { color: c[0], width: 1.2 }, type: "scattergl" },
+    { x: catches.map((s) => xOf(s.t0)), y: catches.map((s) => d.surge[s.i0]), name: "catch", mode: "markers", marker: { color: c[4], size: 6, symbol: "triangle-down" }, type: "scattergl" },
+    { x: sway.x, y: sway.y, name: "sway", yaxis: "y2", line: { color: c[1], width: 1 }, type: "scattergl" },
+    { x: heave.x, y: heave.y, name: "heave", yaxis: "y3", line: { color: c[2], width: 1 }, type: "scattergl" },
   );
   Plotly.react("signals", traces, layout({
-    xaxis: ax({ type: "date", anchor: "y3" }),
-    yaxis: ax({ domain: [0.5, 1], title: { text: "surge m/s²" } }),
-    yaxis2: ax({ domain: [0.26, 0.47], title: { text: "sway" } }),
-    yaxis3: ax({ domain: [0, 0.23], title: { text: "heave" } }),
+    xaxis: ax({ type: "date", anchor: "y3", range: selX() }),
+    yaxis: ax({ domain: [0.5, 1], title: { text: "surge m/s²" }, range: (raw ? rawSurge : surge).range }),
+    yaxis2: ax({ domain: [0.26, 0.47], title: { text: "sway" }, range: sway.range }),
+    yaxis3: ax({ domain: [0, 0.23], title: { text: "heave" }, range: heave.range }),
   }), cfg);
 }
 
 function renderOrientation() {
   const c = colors();
-  const { t } = S;
   const d = S.disp;
+  const [roll, pitch, yaw] = [d.roll, d.pitch, d.yaw].map((y) => y && selSeries(y));
   const traces = [
-    { ...series(t, d.roll), name: "roll (+ stbd down)", line: { color: c[0], width: 1.2 }, type: "scattergl" },
-    { ...series(t, d.pitch), name: "pitch (+ bow up)", yaxis: "y2", line: { color: c[1], width: 1 }, type: "scattergl" },
+    { x: roll.x, y: roll.y, name: "roll (+ stbd down)", line: { color: c[0], width: 1.2 }, type: "scattergl" },
+    { x: pitch.x, y: pitch.y, name: "pitch (+ bow up)", yaxis: "y2", line: { color: c[1], width: 1 }, type: "scattergl" },
   ];
-  if (d.yaw) traces.push({ ...series(t, d.yaw), name: "yaw rate", yaxis: "y3", line: { color: c[2], width: 1 }, type: "scattergl" });
+  if (yaw) traces.push({ x: yaw.x, y: yaw.y, name: "yaw rate", yaxis: "y3", line: { color: c[2], width: 1 }, type: "scattergl" });
   Plotly.react("orient", traces, layout({
-    xaxis: ax({ type: "date", anchor: d.yaw ? "y3" : "y2" }),
-    yaxis: ax({ domain: d.yaw ? [0.5, 1] : [0.45, 1], title: { text: "roll °" } }),
-    yaxis2: ax({ domain: d.yaw ? [0.26, 0.47] : [0, 0.4], title: { text: "pitch °" } }),
-    yaxis3: ax({ domain: [0, 0.23], title: { text: "yaw °/s" } }),
+    xaxis: ax({ type: "date", anchor: yaw ? "y3" : "y2", range: selX() }),
+    yaxis: ax({ domain: yaw ? [0.5, 1] : [0.45, 1], title: { text: "roll °" }, range: roll.range }),
+    yaxis2: ax({ domain: yaw ? [0.26, 0.47] : [0, 0.4], title: { text: "pitch °" }, range: pitch.range }),
+    yaxis3: ax({ domain: [0, 0.23], title: { text: "yaw °/s" }, range: yaw?.range }),
   }), cfg);
 }
 
@@ -469,7 +460,7 @@ function renderTrends() {
   const inSel = ms.filter((m) => m.t0 >= t0 && m.t1 <= t1);
   const lay = layout({
     hovermode: "closest", showlegend: false, margin: { l: 90, r: 16, t: 10, b: 40 },
-    xaxis: ax({ type: "date", anchor: `y${rows.length}`, range: [xOf(t0), xOf(t1)] }),
+    xaxis: ax({ type: "date", anchor: `y${rows.length}`, range: selX() }),
   });
   const traces = rows.map(([, label, fn], i) => {
     const key = i ? `yaxis${i + 1}` : "yaxis";
@@ -501,7 +492,7 @@ function renderRoll(ms) {
   ], layout({
     hovermode: "closest",
     title: { text: "Per-stroke roll", font: { size: 13 } },
-    xaxis: ax({ type: "date" }), yaxis: ax({ title: { text: "° (+ stbd down)" } }),
+    xaxis: ax({ type: "date", range: selX() }), yaxis: ax({ title: { text: "° (+ stbd down)" } }),
   }), cfg);
 }
 
@@ -622,7 +613,6 @@ $("flip").addEventListener("click", () => {
 $("showRaw").addEventListener("change", () => {
   if (!S.t) return;
   renderSignals();
-  fitSelection();
 });
 document.querySelectorAll('input[name="xmode"]').forEach((r) => r.addEventListener("change", () => renderOverlay(selected())));
 $("align").addEventListener("change", () => S.t && renderOverlay(selected()));
