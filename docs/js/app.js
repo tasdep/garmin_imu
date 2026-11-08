@@ -23,10 +23,10 @@ function layout(extra = {}) {
 }
 const ax = (extra = {}) => ({ gridcolor: css("--grid"), zerolinecolor: css("--border"), ...extra });
 
-// Plotly shows date axes in UTC, so shift by the local offset to show wall-clock time.
+// Plotly shows epoch ms in local time and reports zoom ranges as local date strings.
 const xOf = (t) => S.x0 + t * 1000;
 const tOf = (x) =>
-  ((typeof x === "number" ? x : Date.parse(String(x).replace(" ", "T").replace(/(\.\d{3})\d+/, "$1") + "Z")) - S.x0) / 1000;
+  ((typeof x === "number" ? x : Date.parse(String(x).replace(" ", "T").replace(/(\.\d{3})\d+/, "$1"))) - S.x0) / 1000;
 
 const fmtTime = (s) => {
   if (!Number.isFinite(s)) return "–";
@@ -37,19 +37,32 @@ const fmtTime = (s) => {
 const fmtSplit = (mps) => (mps > 0.5 ? fmtTime(500 / mps) : "–");
 const f = (v, d = 1) => (Number.isFinite(v) ? v.toFixed(d) : "–");
 
-// Decimated series with nulls at pauses so lines don't bridge them.
-function series(t, y, i0 = 0, i1 = t.length, max = 150000) {
-  const step = Math.max(1, Math.ceil((i1 - i0) / max));
+// Decimated series with nulls at pauses so lines don't bridge them. Each bucket
+// keeps its min and max, so catch spikes survive zooming out; a few thousand
+// buckets keep redraws fast (150k points per trace took >1 s per selection change).
+function series(t, y, i0 = 0, i1 = t.length, buckets = 4000) {
+  const step = Math.max(1, Math.ceil((i1 - i0) / buckets));
   const xs = [], ys = [];
   let prev = null;
-  for (let i = i0; i < i1; i += step) {
-    if (prev !== null && t[i] - t[prev] > 0.5) {
+  const push = (i) => {
+    // Missing samples, not bucket width: compare elapsed time with the sample count.
+    if (prev !== null && t[i] - t[prev] - (i - prev) * S.dt > 0.5) {
       xs.push(null);
       ys.push(null);
     }
     xs.push(xOf(t[i]));
     ys.push(y[i]);
     prev = i;
+  };
+  for (let b = i0; b < i1; b += step) {
+    const e = Math.min(i1, b + step);
+    let lo = b, hi = b;
+    for (let i = b + 1; i < e; i++) {
+      if (y[i] < y[lo]) lo = i;
+      if (y[i] > y[hi]) hi = i;
+    }
+    push(Math.min(lo, hi));
+    if (lo !== hi) push(Math.max(lo, hi));
   }
   return { x: xs, y: ys };
 }
@@ -69,7 +82,8 @@ async function load(file) {
     S.t = act.accel.t;
     S.acc = [act.accel.x, act.accel.y, act.accel.z];
     S.gyro = act.gyro ? [act.gyro.x, act.gyro.y, act.gyro.z].map((c) => D.interp(act.gyro.t, c, S.t)) : null;
-    S.x0 = act.start.getTime() - act.start.getTimezoneOffset() * 60000;
+    S.dt = D.medianDt(S.t);
+    S.x0 = act.start.getTime();
     S.rec = {
       dist: D.interp(act.rec.t, act.rec.dist, S.t),
       speed: D.interp(act.rec.t, act.rec.speed, S.t),
@@ -80,7 +94,7 @@ async function load(file) {
     fillSelection();
     $("app").hidden = false;
     computeOrientation();
-    const fs = (1 / D.medianDt(S.t)).toFixed(0);
+    const fs = (1 / S.dt).toFixed(0);
     setStatus(`${file.name}: ${act.start.toLocaleString()} · ${S.t.length.toLocaleString()} samples at ${fs} Hz · ${act.gyro ? "accel + gyro" : "accel only (no gyro: orientation from gravity only)"}`);
   } catch (e) {
     console.error(e);
@@ -140,7 +154,9 @@ function fillSelection() {
 
 function setSelection(t0, t1) {
   S.sel = { t0, t1 };
-  Plotly.relayout("overview", { "xaxis.range": [xOf(t0), xOf(t1)] });
+  // Our own relayout fires plotly_relayout too, possibly after a newer selection; ignore it.
+  S.selfRelayout = (S.selfRelayout ?? 0) + 1;
+  Plotly.relayout("overview", { "xaxis.range": selX(), ...overviewY() }).finally(() => S.selfRelayout--);
   renderSignals();
   renderOrientation();
   renderSelection();
@@ -151,6 +167,7 @@ function linkZoom(id) {
   const el = $(id);
   el.removeAllListeners?.("plotly_relayout");
   el.on("plotly_relayout", (ev) => {
+    if (S.selfRelayout) return;
     const full = [S.t[0], S.t[S.t.length - 1]];
     let rg;
     if (ev["xaxis.autorange"]) rg = full;
@@ -158,10 +175,15 @@ function linkZoom(id) {
     else if (ev["xaxis.range[0]"] !== undefined) rg = [tOf(ev["xaxis.range[0]"]), tOf(ev["xaxis.range[1]"])];
     else return;
     const t0 = Math.max(full[0], rg[0]), t1 = Math.min(full[1], rg[1]);
+    if (!(t1 - t0 > 5)) return; // empty or off-the-end range from a stray drag
     // Our own relayouts echo the current selection back; ignore those.
     if (Math.abs(t0 - S.sel.t0) < 0.01 && Math.abs(t1 - S.sel.t1) < 0.01) return;
-    $("sel").value = t0 === full[0] && t1 === full[1] ? "all" : "custom";
-    setSelection(t0, t1);
+    // Dragging the range slider fires many events; redraw once it settles.
+    clearTimeout(S.zoomTimer);
+    S.zoomTimer = setTimeout(() => {
+      $("sel").value = t0 === full[0] && t1 === full[1] ? "all" : "custom";
+      setSelection(t0, t1);
+    }, 250);
   });
 }
 
@@ -297,10 +319,21 @@ function splitAxis(splits) {
   return { title: { text: "split" }, autorange: false, range: [hi + step / 2, lo - step / 2], tickvals: ticks, ticktext: ticks.map(fmtTime) };
 }
 
+// Record values inside the selection, for fitting the overview y axes to the zoom.
+const visRec = (y) => y.filter((v, i) => v && S.act.rec.t[i] >= S.sel.t0 && S.act.rec.t[i] <= S.sel.t1);
+
+function overviewY() {
+  const sa = splitAxis(visRec(S.split));
+  const upd = { "yaxis.range": sa.range, "yaxis.tickvals": sa.tickvals, "yaxis.ticktext": sa.ticktext };
+  const hr = robustRange(visRec(S.act.rec.hr));
+  if (hr) upd["yaxis3.range"] = hr;
+  return upd;
+}
+
 function renderOverview() {
   const c = colors();
   const r = S.act.rec;
-  const split = r.speed.map((v) => (v > 0.5 ? 500 / v : null));
+  const split = (S.split = r.speed.map((v) => (v > 0.5 ? 500 / v : null)));
   const rx = r.t.map(xOf);
   const traces = [
     { x: rx, y: split, name: "Split /500m", yaxis: "y", line: { color: c[0], width: 1.5 }, hovertemplate: "%{customdata}", customdata: split.map(fmtTime) },
@@ -312,11 +345,11 @@ function renderOverview() {
   // A boat-mounted watch records no heart rate; drop the empty row then.
   const hasHr = r.hr.some((v) => v);
   Plotly.react("overview", traces, layout({
-    xaxis: ax({ type: "date", anchor: hasHr ? "y3" : "y2", range: selX(), rangeslider: { visible: true, thickness: 0.06 } }),
-    yaxis: ax({ domain: hasHr ? [0.68, 1] : [0.52, 1], ...splitAxis(split) }),
+    xaxis: ax({ type: "date", anchor: hasHr ? "y3" : "y2", range: selX(), rangeslider: { visible: true, thickness: 0.12, autorange: false, range: [xOf(S.t[0]), xOf(S.t[S.t.length - 1])] } }),
+    yaxis: ax({ domain: hasHr ? [0.68, 1] : [0.52, 1], ...splitAxis(visRec(split)) }),
     // Fixed rowing range so stray values (e.g. native cadence spikes) don't squash the plot.
     yaxis2: ax({ domain: hasHr ? [0.36, 0.64] : [0, 0.46], title: { text: "spm" }, range: [10, 55] }),
-    yaxis3: ax({ domain: [0, 0.32], title: { text: "bpm" }, visible: hasHr }),
+    yaxis3: ax({ domain: [0, 0.32], title: { text: "bpm" }, visible: hasHr, range: robustRange(visRec(r.hr)) }),
     shapes: S.act.laps.slice(1).map((l) => ({ type: "line", xref: "x", yref: "paper", x0: xOf(l.t0), x1: xOf(l.t0), y0: 0, y1: 1, line: { color: css("--muted"), width: 1, dash: "dot" } })),
   }), cfg);
 }
