@@ -82,7 +82,11 @@ async function load(file) {
     S.act = act;
     S.name = file.name;
     S.t = act.accel.t;
-    S.acc = [act.accel.x, act.accel.y, act.accel.z];
+    // Garmin reports the gravity vector (face up reads z = -1 g); negate to the usual
+    // specific force (+1 g up) so up, left and roll come out right. Checked on
+    // 2026-11-08: gyro yaw about up then follows GPS turns (r +0.37, was -0.37) and
+    // forward lands on 6 o'clock, as mounted.
+    S.acc = [act.accel.x, act.accel.y, act.accel.z].map((c) => c.map((v) => -v));
     S.gyro = act.gyro ? [act.gyro.x, act.gyro.y, act.gyro.z].map((c) => D.interp(act.gyro.t, c, S.t)) : null;
     S.dt = D.medianDt(S.t);
     S.x0 = act.start.getTime();
