@@ -42,9 +42,9 @@
           </div>
         </div>
         <div class="ctl">
-          <label for="beta">Orientation filter gain (Madgwick &beta;) <output id="betaOut">0.04</output></label>
-          <input id="beta" type="range" min="0.005" max="0.2" step="0.005" value="0.04">
-          <small>Lower trusts the gyro more (less disturbed by boat accelerations).</small>
+          <label for="tau">Orientation filter time constant <output id="tauOut">20 s</output></label>
+          <input id="tau" type="range" min="5" max="60" step="5" value="20">
+          <small>Longer trusts the gyro more (less disturbed by boat accelerations, more gyro drift).</small>
         </div>
         <div class="ctl">
           <label for="sens">Stroke detection threshold <output id="sensOut">0.5</output></label>
@@ -122,7 +122,7 @@
       <details class="card notes">
         <summary>How this is computed</summary>
         <ul>
-          <li><b>Orientation:</b> Madgwick 6-axis filter on the raw 100 Hz accel and gyro. Gyro bias is the per-axis median, and the accel correction is skipped when |a| is more than 0.3 g away from 1 g.</li>
+          <li><b>Orientation:</b> complementary filter on the raw 100 Hz accel and gyro: the gravity direction is rotated with the gyro (bias = per-axis median) and pulled linearly toward the raw accel with the chosen time constant. Over whole strokes the boat's mean acceleration is about zero, so this converges on true gravity, and surge averages ≈ 0 m/s² at steady speed.</li>
           <li><b>Boat frame:</b> up is the session-average gravity direction, forward is the dominant horizontal acceleration, and left = up &times; forward. Roll and pitch are relative to the average level, with positive roll = starboard side down and positive pitch = bow up. If forward is backwards, everything left/right is mirrored: use <i>Flip forward</i>.</li>
           <li><b>Surge / sway / heave:</b> acceleration minus gravity (from the orientation filter), projected on forward / left / up.</li>
           <li><b>Strokes:</b> catches are minima of the 4 Hz low-passed surge acceleration that are at least half as deep (adjustable) as the deepest dip within ±2 s, at least 0.7 s apart. This skips the shallow secondary dip each stroke also has. A rhythm check then drops a catch that splits one stroke into two unusually short halves.</li>

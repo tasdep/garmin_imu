@@ -22,6 +22,8 @@ function layout(extra = {}) {
   };
 }
 const ax = (extra = {}) => ({ gridcolor: css("--grid"), zerolinecolor: css("--border"), ...extra });
+// Bold 0 on acceleration axes, the line the curve should balance around over a stroke.
+const zero = () => ({ zeroline: true, zerolinecolor: css("--fg"), zerolinewidth: 2 });
 
 // Plotly shows epoch ms in local time and reports zoom ranges as local date strings.
 const xOf = (t) => S.x0 + t * 1000;
@@ -103,7 +105,7 @@ async function load(file) {
 }
 
 function computeOrientation() {
-  S.up = S.gyro ? D.madgwick(S.t, S.acc, S.gyro, +$("beta").value) : D.upFromAccel(S.t, S.acc);
+  S.up = S.gyro ? D.gravityFilter(S.t, S.acc, S.gyro, +$("tau").value) : D.upFromAccel(S.t, S.acc);
   S.frame0 = D.boatFrame(S.t, S.acc, S.up, S.gyro);
   S.autoFlip = D.forwardLooksReversed(D.lowpass(S.frame0.surge, S.t, 4));
   applyFrame();
@@ -370,9 +372,9 @@ function renderSignals() {
   );
   Plotly.react("signals", traces, layout({
     xaxis: ax({ type: "date", anchor: "y3", range: selX() }),
-    yaxis: ax({ domain: [0.5, 1], title: { text: "surge m/s²" }, range: (raw ? rawSurge : surge).range }),
-    yaxis2: ax({ domain: [0.26, 0.47], title: { text: "sway" }, range: sway.range }),
-    yaxis3: ax({ domain: [0, 0.23], title: { text: "heave" }, range: heave.range }),
+    yaxis: ax({ domain: [0.5, 1], title: { text: "surge m/s²" }, range: (raw ? rawSurge : surge).range, ...zero() }),
+    yaxis2: ax({ domain: [0.26, 0.47], title: { text: "sway" }, range: sway.range, ...zero() }),
+    yaxis3: ax({ domain: [0, 0.23], title: { text: "heave" }, range: heave.range, ...zero() }),
   }), cfg);
 }
 
@@ -467,7 +469,7 @@ function renderOverlay(sel) {
   const shift = +$("shift").value;
   const xTitle = (timeMode ? `time from ${align} (s)` : `% of stroke (${align} → ${align})`) + (shift ? `, shifted ${shift > 0 ? "+" : ""}${shift} %` : "");
   const s = overlayTraces(wins, S.disp.surge, "m/s²");
-  Plotly.react("overlaySurge", s.traces, layout({ hovermode: "closest", shapes: s.shapes, xaxis: ax({ title: { text: xTitle } }), yaxis: ax({ title: { text: "surge m/s²" } }), title: { text: `Boat acceleration · ${wins.length} strokes`, font: { size: 13 } } }), cfg);
+  Plotly.react("overlaySurge", s.traces, layout({ hovermode: "closest", shapes: s.shapes, xaxis: ax({ title: { text: xTitle } }), yaxis: ax({ title: { text: "surge m/s²" }, ...zero() }), title: { text: `Boat acceleration · ${wins.length} strokes`, font: { size: 13 } } }), cfg);
   const r = overlayTraces(wins, S.disp.roll, "°");
   Plotly.react("overlayRoll", r.traces, layout({ hovermode: "closest", shapes: r.shapes, xaxis: ax({ title: { text: xTitle } }), yaxis: ax({ title: { text: "roll ° (+ stbd down)" } }), title: { text: "Roll through the stroke", font: { size: 13 } } }), cfg);
 }
@@ -635,8 +637,8 @@ $("ftype").addEventListener("change", () => {
   if (S.t) filterDisplay();
 });
 $("fc").addEventListener("change", () => S.t && filterDisplay());
-$("beta").addEventListener("input", () => ($("betaOut").textContent = $("beta").value));
-$("beta").addEventListener("change", () => S.t && computeOrientation());
+$("tau").addEventListener("input", () => ($("tauOut").textContent = `${$("tau").value} s`));
+$("tau").addEventListener("change", () => S.t && computeOrientation());
 $("sens").addEventListener("input", () => ($("sensOut").textContent = $("sens").value));
 $("sens").addEventListener("change", () => S.t && detect());
 $("flip").addEventListener("click", () => {

@@ -144,63 +144,41 @@ export function interp(ts, ys, td) {
   return out;
 }
 
-// Madgwick 6-DOF AHRS (Madgwick 2010, IMU variant). Returns the estimated
-// "up" direction in the sensor frame per sample, i.e. what the accelerometer
-// would read with no linear acceleration. Gyro bias is taken as the per-axis
-// median, and the accel correction is skipped when |a| is far from 1 g so
-// boat surges and knocks don't tilt the estimate.
-export function madgwick(t, a, g, beta = 0.04) {
+// Complementary filter for the "up" direction in the sensor frame per sample,
+// i.e. what the accelerometer would read with no linear acceleration. The
+// gravity vector is rotated with the gyro (bias = per-axis median) and pulled
+// linearly toward the raw accel with time constant tau. A linear pull converges
+// to the mean accel, which is gravity because the boat's mean acceleration over
+// strokes is ~0. Madgwick (normalised step, gated on |a| near 1 g) tracked
+// something median-like instead: on the 2026-11-08 session its gravity was
+// tilted ~7° toward the stern, giving -1.1 m/s² mean surge at steady speed.
+// tau = 20 s: ~0.07 m/s² residual there, and stroke-rate (~0.55 Hz) accel leaks
+// only ~1.4 % into the tilt estimate.
+export function gravityFilter(t, a, g, tau = 20) {
   const n = t.length;
   const rad = Math.PI / 180;
   const bias = g.map(median);
-  const ux = new Float64Array(n), uy = new Float64Array(n), uz = new Float64Array(n);
-  let q0 = 1, q1 = 0, q2 = 0, q3 = 0;
-
-  function step(i, b, dt, useGyro) {
-    const gx = useGyro ? (g[0][i] - bias[0]) * rad : 0;
-    const gy = useGyro ? (g[1][i] - bias[1]) * rad : 0;
-    const gz = useGyro ? (g[2][i] - bias[2]) * rad : 0;
-    let d0 = 0.5 * (-q1 * gx - q2 * gy - q3 * gz);
-    let d1 = 0.5 * (q0 * gx + q2 * gz - q3 * gy);
-    let d2 = 0.5 * (q0 * gy - q1 * gz + q3 * gx);
-    let d3 = 0.5 * (q0 * gz + q1 * gy - q2 * gx);
-    let ax = a[0][i], ay = a[1][i], az = a[2][i];
-    const an = Math.hypot(ax, ay, az);
-    if (an > 0 && Math.abs(an - 1000) < 300) {
-      ax /= an; ay /= an; az /= an;
-      const _2q0 = 2 * q0, _2q1 = 2 * q1, _2q2 = 2 * q2, _2q3 = 2 * q3;
-      const _4q0 = 4 * q0, _4q1 = 4 * q1, _4q2 = 4 * q2, _8q1 = 8 * q1, _8q2 = 8 * q2;
-      const q0q0 = q0 * q0, q1q1 = q1 * q1, q2q2 = q2 * q2, q3q3 = q3 * q3;
-      let s0 = _4q0 * q2q2 + _2q2 * ax + _4q0 * q1q1 - _2q1 * ay;
-      let s1 = _4q1 * q3q3 - _2q3 * ax + 4 * q0q0 * q1 - _2q0 * ay - _4q1 + _8q1 * q1q1 + _8q1 * q2q2 + _4q1 * az;
-      let s2 = 4 * q0q0 * q2 + _2q0 * ax + _4q2 * q3q3 - _2q3 * ay - _4q2 + _8q2 * q1q1 + _8q2 * q2q2 + _4q2 * az;
-      let s3 = 4 * q1q1 * q3 - _2q1 * ax + 4 * q2q2 * q3 - _2q2 * ay;
-      const sn = Math.hypot(s0, s1, s2, s3);
-      if (sn > 0) {
-        d0 -= (b * s0) / sn; d1 -= (b * s1) / sn; d2 -= (b * s2) / sn; d3 -= (b * s3) / sn;
-      }
-    }
-    q0 += d0 * dt; q1 += d1 * dt; q2 += d2 * dt; q3 += d3 * dt;
-    const qn = Math.hypot(q0, q1, q2, q3);
-    q0 /= qn; q1 /= qn; q2 /= qn; q3 /= qn;
-  }
-
+  const up = [new Float64Array(n), new Float64Array(n), new Float64Array(n)];
   const dt0 = medianDt(t);
-  // Settle the initial attitude on the first 2 s using gravity only.
-  const warm = Math.min(n, Math.round(2 / dt0));
-  for (let k = 0; k < 20; k++) for (let i = 0; i < warm; i++) step(i, 1, dt0, false);
+  // Start from the mean accel of the first 2 s.
+  const warm = Math.max(1, Math.min(n, Math.round(2 / dt0)));
+  const v = [0, 1, 2].map((k) => a[k].slice(0, warm).reduce((s, x) => s + x, 0) / warm);
   for (let i = 0; i < n; i++) {
     let dt = i ? t[i] - t[i - 1] : dt0;
     if (!(dt > 0) || dt > 0.2) dt = dt0;
-    step(i, beta, dt, true);
-    ux[i] = 2 * (q1 * q3 - q0 * q2);
-    uy[i] = 2 * (q0 * q1 + q2 * q3);
-    uz[i] = q0 * q0 - q1 * q1 - q2 * q2 + q3 * q3;
+    // A fixed world direction seen from the rotating sensor: dv = -w x v.
+    const w = [0, 1, 2].map((k) => (g[k][i] - bias[k]) * rad * dt);
+    const [x, y, z] = v;
+    v[0] = x - (w[1] * z - w[2] * y);
+    v[1] = y - (w[2] * x - w[0] * z);
+    v[2] = z - (w[0] * y - w[1] * x);
+    const k = dt / tau;
+    for (let j = 0; j < 3; j++) v[j] += k * (a[j][i] - v[j]);
+    const m = Math.hypot(v[0], v[1], v[2]) || 1;
+    for (let j = 0; j < 3; j++) up[j][i] = v[j] / m;
   }
-  return [ux, uy, uz];
+  return up;
 }
-
-// Without a gyro: up = normalised slow low-pass of the accel.
 export function upFromAccel(t, a) {
   const f = a.map((c) => lowpass(c, t, 0.3, 2));
   const n = t.length;
