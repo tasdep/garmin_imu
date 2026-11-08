@@ -105,7 +105,7 @@ function applyFrame() {
 function detect() {
   const { t } = S;
   S.sDet = D.lowpass(S.frame.surge, t, 4);
-  S.strokes = D.detectStrokes(t, S.sDet, { promFrac: +$("sens").value });
+  S.strokes = D.detectStrokes(t, S.sDet, { depthFrac: +$("sens").value });
   S.metrics = D.strokeMetrics(S.strokes, { t, surge: S.sDet, roll: S.frame.roll, pitch: S.frame.pitch, ...S.rec });
   filterDisplay();
 }
@@ -132,6 +132,8 @@ function fillSelection() {
   const sel = $("sel");
   sel.innerHTML = "";
   sel.add(new Option("Whole activity", "all"));
+  S.pieces = D.findPieces(S.act.rec);
+  S.pieces.forEach((p, i) => sel.add(new Option(`Piece ${i + 1}: ${p.dist.toFixed(0)} m in ${fmtTime(p.t1 - p.t0)} (${fmtSplit(p.dist / (p.t1 - p.t0))})`, `p${i}`)));
   for (const l of S.act.laps) sel.add(new Option(`Lap ${l.index} (${fmtTime(l.t1 - l.t0)})`, String(l.index)));
   sel.add(new Option("Custom (zoomed)", "custom"));
 }
@@ -144,7 +146,7 @@ function setSelection(t0, t1, fromZoom = false) {
   } else {
     $("sel").value = "custom";
   }
-  for (const id of ["signals", "orient", "trends"]) Plotly.relayout(id, { "xaxis.range": [xOf(t0), xOf(t1)] });
+  fitSelection();
   renderSelection();
 }
 
@@ -160,8 +162,30 @@ function renderAll() {
   renderOrientation();
   renderMap();
   renderSelection();
+  fitSelection();
+}
+
+// Zoom the detail charts to the selection and fit their y axes to what's visible.
+function fitSelection() {
   const { t0, t1 } = S.sel;
-  for (const id of ["signals", "orient", "trends"]) Plotly.relayout(id, { "xaxis.range": [xOf(t0), xOf(t1)] });
+  const [i0, i1] = rangeIdx(t0, t1);
+  const step = Math.max(1, Math.ceil((i1 - i0) / 50000));
+  const part = (x) => {
+    const out = [];
+    for (let i = i0; i < i1; i += step) out.push(x[i]);
+    return out;
+  };
+  const d = S.disp;
+  const fit = (id, arrays) => {
+    const upd = { "xaxis.range": [xOf(t0), xOf(t1)] };
+    arrays.forEach((x, k) => {
+      const r = x && robustRange(part(x));
+      if (r) upd[`yaxis${k ? k + 1 : ""}.range`] = r;
+    });
+    Plotly.relayout(id, upd);
+  };
+  fit("signals", [$("showRaw").checked ? S.frame.surge : d.surge, d.sway, d.heave]);
+  fit("orient", [d.roll, d.pitch, d.yaw]);
 }
 
 function renderSelection() {
@@ -252,6 +276,25 @@ function rollSides(i0, i1) {
   return { stbd: (100 * s) / n, port: (100 * p) / n, level: (100 * l) / n };
 }
 
+// 1st-99th percentile with padding, so a few knocks or outliers don't set the scale.
+function robustRange(values, pad = 0.1) {
+  const lo = D.percentile(values, 0.01), hi = D.percentile(values, 0.99);
+  if (!Number.isFinite(lo)) return undefined;
+  const span = hi - lo || 1;
+  return [lo - pad * span, hi + pad * span];
+}
+
+// Reversed split axis (faster = higher) with m:ss ticks at a readable spacing.
+function splitAxis(splits) {
+  const v = splits.filter((x) => Number.isFinite(x) && x < 600);
+  const lo = v.length ? D.percentile(v, 0.02) : 90;
+  const hi = v.length ? D.percentile(v, 0.95) : 180;
+  const step = [5, 10, 15, 20, 30, 60, 120].find((s) => (hi - lo) / s <= 6) ?? 120;
+  const ticks = [];
+  for (let x = Math.floor(lo / step) * step; x <= hi + step; x += step) ticks.push(x);
+  return { title: { text: "split" }, autorange: false, range: [hi + step / 2, lo - step / 2], tickvals: ticks, ticktext: ticks.map(fmtTime) };
+}
+
 function renderOverview() {
   const c = colors();
   const r = S.act.rec;
@@ -264,16 +307,14 @@ function renderOverview() {
     { x: rx, y: r.hr, name: "Heart rate", yaxis: "y3", line: { color: c[4], width: 1.5 } },
   ];
   if (r.imuSr.some((v) => v)) traces.push({ x: rx, y: r.imuSr, name: "SPM (app live)", yaxis: "y2", line: { color: c[5], width: 1, dash: "dot" } });
-  const sv = split.filter(Number.isFinite).sort((a, b) => a - b);
-  const lo = sv.length ? Math.max(60, Math.floor(sv[Math.floor(0.02 * sv.length)] / 10) * 10) : 90;
-  const hi = sv.length ? Math.min(400, Math.ceil(sv[Math.floor(0.95 * sv.length)] / 10) * 10 + 10) : 180;
-  const ticks = [];
-  for (let v = lo; v <= hi; v += hi - lo > 80 ? 20 : 10) ticks.push(v);
+  // A boat-mounted watch records no heart rate; drop the empty row then.
+  const hasHr = r.hr.some((v) => v);
   Plotly.react("overview", traces, layout({
-    xaxis: ax({ type: "date", anchor: "y3", rangeslider: { visible: true, thickness: 0.06 } }),
-    yaxis: ax({ domain: [0.68, 1], title: { text: "split" }, autorange: false, range: [hi, lo], tickvals: ticks, ticktext: ticks.map(fmtTime) }),
-    yaxis2: ax({ domain: [0.36, 0.64], title: { text: "spm" } }),
-    yaxis3: ax({ domain: [0, 0.32], title: { text: "bpm" } }),
+    xaxis: ax({ type: "date", anchor: hasHr ? "y3" : "y2", rangeslider: { visible: true, thickness: 0.06 } }),
+    yaxis: ax({ domain: hasHr ? [0.68, 1] : [0.52, 1], ...splitAxis(split) }),
+    // Fixed rowing range so stray values (e.g. native cadence spikes) don't squash the plot.
+    yaxis2: ax({ domain: hasHr ? [0.36, 0.64] : [0, 0.46], title: { text: "spm" }, range: [10, 55] }),
+    yaxis3: ax({ domain: [0, 0.32], title: { text: "bpm" }, visible: hasHr }),
     shapes: S.act.laps.slice(1).map((l) => ({ type: "line", xref: "x", yref: "paper", x0: xOf(l.t0), x1: xOf(l.t0), y0: 0, y1: 1, line: { color: css("--muted"), width: 1, dash: "dot" } })),
   }), cfg);
   const el = $("overview");
@@ -393,14 +434,18 @@ function renderTrends() {
   const n = rows.length;
   const gap = 0.02;
   const h = (1 - gap * (n - 1)) / n;
-  const lay = layout({ hovermode: "closest", showlegend: false, xaxis: ax({ type: "date", anchor: `y${rows.length}` }), margin: { l: 90, r: 16, t: 10, b: 40 } });
+  const { t0, t1 } = S.sel;
+  const inSel = ms.filter((m) => m.t0 >= t0 && m.t1 <= t1);
+  const lay = layout({
+    hovermode: "closest", showlegend: false, margin: { l: 90, r: 16, t: 10, b: 40 },
+    xaxis: ax({ type: "date", anchor: `y${rows.length}`, range: [xOf(t0), xOf(t1)] }),
+  });
   const traces = rows.map(([, label, fn], i) => {
     const key = i ? `yaxis${i + 1}` : "yaxis";
     const top = 1 - i * (h + gap);
+    const vals = inSel.map(fn);
     lay[key] = ax({ domain: [top - h, top], title: { text: label, font: { size: 11 } } });
-    if (label === "/500m") {
-      lay[key].autorange = "reversed";
-    }
+    Object.assign(lay[key], label === "/500m" ? { ...splitAxis(vals), title: { text: label, font: { size: 11 } } } : { range: robustRange(vals) });
     return { x, y: ms.map(fn), mode: "markers", marker: { size: 4, color: c[i % c.length] }, yaxis: i ? `y${i + 1}` : "y", name: label, type: "scattergl", hovertemplate: `%{y:.2f} ${label}<extra></extra>` };
   });
   Plotly.react("trends", traces, lay, cfg);
@@ -517,7 +562,10 @@ drop.addEventListener("drop", (e) => {
 $("sel").addEventListener("change", (e) => {
   const v = e.target.value;
   if (v === "all") setSelection(S.t[0], S.t[S.t.length - 1]);
-  else if (v !== "custom") {
+  else if (v.startsWith("p")) {
+    const p = S.pieces[+v.slice(1)];
+    setSelection(p.t0, p.t1);
+  } else if (v !== "custom") {
     const l = S.act.laps[+v - 1];
     setSelection(l.t0, l.t1);
   }
@@ -540,6 +588,10 @@ $("flip").addEventListener("click", () => {
   S.flip = !S.flip;
   applyFrame();
 });
-$("showRaw").addEventListener("change", () => S.t && renderSignals());
+$("showRaw").addEventListener("change", () => {
+  if (!S.t) return;
+  renderSignals();
+  fitSelection();
+});
 document.querySelectorAll('input[name="xmode"]').forEach((r) => r.addEventListener("change", () => renderOverlay(selected())));
 $("csv").addEventListener("click", downloadCsv);

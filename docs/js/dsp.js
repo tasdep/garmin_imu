@@ -285,8 +285,11 @@ export function forwardLooksReversed(surgeLp) {
   return Math.abs(percentile(surgeLp, 0.995)) > Math.abs(percentile(surgeLp, 0.005));
 }
 
-// Catches = prominent minima of the low-passed surge acceleration.
-export function detectStrokes(t, s, { minDist = 0.7, minDur = 0.75, maxDur = 4.5, promFrac = 0.35, minProm = 0.5, win = 2.5 } = {}) {
+// Catches = prominent minima of the low-passed surge acceleration that are at
+// least depthFrac as deep as the deepest dip within +-localWin. On water each
+// stroke also has a shallow secondary dip (~-1.5 vs ~-8 m/s2 at the catch in
+// the 2026-11-08 session) that a global prominence threshold let through.
+export function detectStrokes(t, s, { minDist = 0.7, minDur = 0.75, maxDur = 4.5, depthFrac = 0.5, minProm = 1.0, win = 2.5, localWin = 2.0 } = {}) {
   const n = s.length;
   const cand = [];
   for (let i = 1; i < n - 1; i++) if (s[i] < 0 && s[i] <= s[i - 1] && s[i] < s[i + 1]) cand.push(i);
@@ -298,8 +301,13 @@ export function detectStrokes(t, s, { minDist = 0.7, minDur = 0.75, maxDur = 4.5
     if (rm === -Infinity) rm = lm;
     return Math.min(lm, rm) - s[i];
   });
-  const thr = Math.max(minProm, promFrac * percentile(prom.filter((p) => p > 0), 0.9) || 0);
-  const keep = cand.filter((_, k) => prom[k] >= thr).sort((a, b) => s[a] - s[b]);
+  const deepEnough = (i) => {
+    let lo = s[i];
+    for (let j = i - 1; j >= 0 && t[i] - t[j] <= localWin; j--) lo = Math.min(lo, s[j]);
+    for (let j = i + 1; j < n && t[j] - t[i] <= localWin; j++) lo = Math.min(lo, s[j]);
+    return s[i] <= depthFrac * lo;
+  };
+  const keep = cand.filter((i, k) => prom[k] >= minProm && deepEnough(i)).sort((a, b) => s[a] - s[b]);
 
   // Deepest first; drop anything closer than minDist to an accepted catch.
   const accepted = [];
@@ -315,6 +323,23 @@ export function detectStrokes(t, s, { minDist = 0.7, minDur = 0.75, maxDur = 4.5
       times.splice(lo, 0, t[i]);
       accepted.splice(lo, 0, i);
     }
+  }
+
+  // Rhythm check: an occasionally deep mid-stroke dip splits one stroke into
+  // two ~half-length ones (6-9 times per 3k piece on 2026-11-08). Drop the
+  // middle catch when both halves are short but together make a normal stroke.
+  for (let pass = 0; pass < 2; pass++) {
+    const durs = [];
+    for (let k = 0; k + 1 < accepted.length; k++) durs.push(t[accepted[k + 1]] - t[accepted[k]]);
+    const drop = new Set();
+    for (let k = 1; k < durs.length; k++) {
+      if (drop.has(k - 1)) continue;
+      const local = median(durs.slice(Math.max(0, k - 8), k + 9).filter((d) => d <= maxDur));
+      const a = durs[k - 1], b = durs[k];
+      if (a < 0.7 * local && b < 0.7 * local && a + b < 1.3 * local) drop.add(k);
+    }
+    if (!drop.size) break;
+    for (const k of [...drop].sort((x, y) => y - x)) accepted.splice(k, 1);
   }
 
   const segId = new Int32Array(n);
@@ -399,4 +424,36 @@ export function pearson(a, b) {
     sab += da * db; saa += da * da; sbb += db * db;
   }
   return sab / Math.sqrt(saa * sbb);
+}
+
+// Work pieces: stretches of at least minDur s where the 20 s mean GPS speed
+// stays above frac x the session's 90th-percentile speed. Found the two 3k
+// pieces of the 2026-11-08 session exactly.
+export function findPieces(rec, { frac = 0.85, minDur = 180 } = {}) {
+  const { t, speed, dist } = rec;
+  const n = t.length;
+  const sm = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    let s = 0, c = 0;
+    for (let j = Math.max(0, i - 10); j <= Math.min(n - 1, i + 10); j++) {
+      if (speed[j] != null) {
+        s += speed[j];
+        c++;
+      }
+    }
+    sm[i] = c ? s / c : 0;
+  }
+  const thr = frac * percentile(speed.filter((v) => v != null), 0.9);
+  const pieces = [];
+  for (let i = 0; i < n; ) {
+    if (!(sm[i] > thr)) {
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j < n && sm[j] > thr) j++;
+    if (t[j - 1] - t[i] >= minDur) pieces.push({ t0: t[i], t1: t[j - 1], dist: dist[j - 1] - dist[i] });
+    i = j;
+  }
+  return pieces;
 }

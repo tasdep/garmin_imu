@@ -47,9 +47,9 @@
           <small>Lower trusts the gyro more (less disturbed by boat accelerations).</small>
         </div>
         <div class="ctl">
-          <label for="sens">Stroke detection threshold <output id="sensOut">0.35</output></label>
-          <input id="sens" type="range" min="0.1" max="0.8" step="0.05" value="0.35">
-          <small>Fraction of a typical catch dip a minimum must reach.</small>
+          <label for="sens">Stroke detection threshold <output id="sensOut">0.5</output></label>
+          <input id="sens" type="range" min="0.2" max="0.9" step="0.05" value="0.5">
+          <small>A catch must be at least this fraction as deep as the deepest dip within ±2 s.</small>
         </div>
         <div class="ctl">
           <label>Boat direction</label>
@@ -118,7 +118,8 @@
           <li><b>Orientation:</b> Madgwick 6-axis filter on the raw 100 Hz accel and gyro. Gyro bias is the per-axis median, and the accel correction is skipped when |a| is more than 0.3 g away from 1 g.</li>
           <li><b>Boat frame:</b> up is the session-average gravity direction, forward is the dominant horizontal acceleration, and left = up &times; forward. Roll and pitch are relative to the average level, with positive roll = starboard side down and positive pitch = bow up. If forward is backwards, everything left/right is mirrored: use <i>Flip forward</i>.</li>
           <li><b>Surge / sway / heave:</b> acceleration minus gravity (from the orientation filter), projected on forward / left / up.</li>
-          <li><b>Strokes:</b> catches are prominent minima of the 4 Hz low-passed surge acceleration, at least 0.7 s apart. Stroke metrics always use the 4 Hz signal; the display filter only affects the charts and overlays.</li>
+          <li><b>Strokes:</b> catches are minima of the 4 Hz low-passed surge acceleration that are at least half as deep (adjustable) as the deepest dip within ±2 s, at least 0.7 s apart. This skips the shallow secondary dip each stroke also has. A rhythm check then drops a catch that splits one stroke into two unusually short halves.</li>
+          <li><b>Pieces</b> in the selection menu are stretches of at least 3 min where the 20 s mean GPS speed stays above 85 % of the session's 90th-percentile speed. Stroke metrics always use the 4 Hz signal; the display filter only affects the charts and overlays.</li>
           <li><b>Drive time</b> runs from the catch until surge acceleration first turns negative after its peak (an approximation of the finish).</li>
           <li><b>Consistency:</b> the correlation (r) of each stroke's surge curve, resampled to 0&ndash;100 %, with the mean curve of the selection, plus the coefficient of variation (CV) of the stroke metrics.</li>
           <li><b>Split, distance per stroke and heart rate</b> come from the watch's 1 Hz records (GPS).</li>
