@@ -80,7 +80,14 @@
         <h2>Stroke overlay</h2>
         <div class="row">
           <label class="inline"><input type="radio" name="xmode" value="pct" checked> % of stroke</label>
-          <label class="inline"><input type="radio" name="xmode" value="time"> Time since catch</label>
+          <label class="inline"><input type="radio" name="xmode" value="time"> Time</label>
+          <label class="inline">Align
+            <select id="align">
+              <option value="catch">catch → catch</option>
+              <option value="finish">finish → finish</option>
+            </select>
+          </label>
+          <label class="inline">Shift <input id="shift" type="range" min="-50" max="50" step="1" value="0"> <output id="shiftOut">0 %</output></label>
         </div>
         <div class="grid2">
           <div id="overlaySurge" class="plot"></div>
@@ -120,7 +127,7 @@
           <li><b>Surge / sway / heave:</b> acceleration minus gravity (from the orientation filter), projected on forward / left / up.</li>
           <li><b>Strokes:</b> catches are minima of the 4 Hz low-passed surge acceleration that are at least half as deep (adjustable) as the deepest dip within ±2 s, at least 0.7 s apart. This skips the shallow secondary dip each stroke also has. A rhythm check then drops a catch that splits one stroke into two unusually short halves.</li>
           <li><b>Pieces</b> in the selection menu are stretches of at least 3 min where the 20 s mean GPS speed stays above 85 % of the session's 90th-percentile speed. Stroke metrics always use the 4 Hz signal; the display filter only affects the charts and overlays.</li>
-          <li><b>Drive time</b> runs from the catch until surge acceleration first turns negative after its peak (an approximation of the finish).</li>
+          <li><b>Finish</b> is the release dip: the lowest surge acceleration between the drive peak and 65 % of the stroke. <b>Drive time</b> runs from the catch to the finish. The overlay can align strokes catch &rarr; catch or finish &rarr; finish, and <i>Shift</i> scrolls the window by a fraction of a stroke.</li>
           <li><b>Consistency:</b> the correlation (r) of each stroke's surge curve, resampled to 0&ndash;100 %, with the mean curve of the selection, plus the coefficient of variation (CV) of the stroke metrics.</li>
           <li><b>Split, distance per stroke and heart rate</b> come from the watch's 1 Hz records (GPS).</li>
         </ul>

@@ -362,14 +362,13 @@ export function strokeMetrics(strokes, { t, surge, roll, pitch, dist, speed, hr 
     let ip = i0;
     const peakEnd = i0 + Math.floor(0.7 * (i1 - i0));
     for (let i = i0; i <= peakEnd; i++) if (surge[i] > surge[ip]) ip = i;
-    let id = -1;
-    for (let i = ip; i < i1; i++) {
-      if (surge[i] < 0) {
-        id = i;
-        break;
-      }
-    }
-    const drive = id >= 0 ? t[id] - t[i0] : NaN;
+    // Finish = the release dip: lowest surge between the drive peak and 65 %
+    // of the stroke. On 2026-11-08 (33 spm) it sat at ~45 % with the recovery
+    // hump at ~70 %; searching further reaches the slide into the next catch.
+    let iF = ip;
+    const finEnd = i0 + Math.floor(0.65 * (i1 - i0));
+    for (let i = ip; i <= finEnd; i++) if (surge[i] < surge[iF]) iF = i;
+    const drive = iF > ip ? t[iF] - t[i0] : NaN;
     let rMin = Infinity, rMax = -Infinity, rSum = 0, pMin = Infinity, pMax = -Infinity, vMin = Infinity, vMax = -Infinity;
     for (let i = i0; i < i1; i++) {
       rMin = Math.min(rMin, roll[i]); rMax = Math.max(rMax, roll[i]); rSum += roll[i];
@@ -387,6 +386,8 @@ export function strokeMetrics(strokes, { t, surge, roll, pitch, dist, speed, hr 
       minAcc: vMin,
       peakAcc: surge[ip],
       tPeak: t[ip] - t[i0],
+      tFinish: t[iF],
+      finishAcc: surge[iF],
       drive,
       ratio: drive / (dur - drive),
       rollMean: rSum / (i1 - i0),
@@ -400,13 +401,18 @@ export function strokeMetrics(strokes, { t, surge, roll, pitch, dist, speed, hr 
   });
 }
 
-// Stroke curve resampled to N points over 0..100 % of the stroke.
-export function strokeCurve(t, x, st, N = 101) {
+// x resampled to N points over the time window [ta, tb] (e.g. one stroke).
+export function windowCurve(t, x, ta, tb, N = 101) {
   const out = new Float64Array(N);
-  let j = st.i0;
+  let lo = 0, hi = t.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (t[mid] < ta) lo = mid + 1; else hi = mid;
+  }
+  let j = Math.max(0, lo - 1);
   for (let k = 0; k < N; k++) {
-    const tk = st.t0 + ((st.t1 - st.t0) * k) / (N - 1);
-    while (j < st.i1 - 1 && t[j + 1] < tk) j++;
+    const tk = ta + ((tb - ta) * k) / (N - 1);
+    while (j < t.length - 2 && t[j + 1] < tk) j++;
     const dt = t[j + 1] - t[j];
     out[k] = dt > 0 ? x[j] + ((x[j + 1] - x[j]) * (tk - t[j])) / dt : x[j];
   }

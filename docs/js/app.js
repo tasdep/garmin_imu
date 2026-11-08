@@ -191,8 +191,8 @@ function fitSelection() {
 function renderSelection() {
   const sel = selected();
   // Consistency: correlation of each selected stroke's curve with the selection mean.
-  S.selCurves = sel.map(([, k]) => D.strokeCurve(S.t, S.disp.surge, S.strokes[k]));
-  S.selRoll = sel.map(([, k]) => D.strokeCurve(S.t, S.disp.roll, S.strokes[k]));
+  // Always catch -> catch, so the score doesn't depend on the overlay view.
+  S.selCurves = sel.map(([m]) => D.windowCurve(S.t, S.disp.surge, m.t0, m.t1));
   S.meanCurve = meanOf(S.selCurves);
   sel.forEach(([m], j) => (m.similarity = D.pearson(S.selCurves[j], S.meanCurve)));
   S.metrics.forEach((m) => {
@@ -369,52 +369,83 @@ function renderOrientation() {
   }), cfg);
 }
 
+// Overlay window per selected stroke: catch -> catch or finish -> finish (to
+// the next stroke's finish), scrolled by a fraction of the window length.
+function overlayWindows(sel) {
+  const finish = $("align").value === "finish";
+  const shift = +$("shift").value / 100;
+  const out = [];
+  for (const [m, k] of sel) {
+    let a = m.t0, b = m.t1;
+    const prev = S.metrics[k - 1], next = S.metrics[k + 1];
+    if (finish) {
+      if (!next || next.t0 !== m.t1 || !Number.isFinite(m.drive) || !Number.isFinite(next.drive)) continue;
+      a = m.tFinish;
+      b = next.tFinish;
+    }
+    const d = b - a;
+    a += shift * d;
+    b += shift * d;
+    // Where the catch and finish fall inside this window, for the phase markers.
+    const pos = (times) => times.filter((x) => x != null && x >= a && x < b).map((x) => (100 * (x - a)) / d)[0];
+    const catches = [prev?.t0, m.t0, m.t1, next?.t1];
+    const finishes = [prev && Number.isFinite(prev.drive) ? prev.tFinish : null, Number.isFinite(m.drive) ? m.tFinish : null, next && Number.isFinite(next.drive) ? next.tFinish : null];
+    out.push({ a, b, catchPos: pos(catches), finishPos: pos(finishes) });
+  }
+  return out;
+}
+
 // One trace per third of the selection (early/middle/late) so drift shows up.
-function overlayTraces(curves, sel, signal, unit) {
+function overlayTraces(wins, signal, unit) {
   const c = colors();
   const timeMode = document.querySelector('input[name="xmode"]:checked').value === "time";
-  const groups = [[], [], []];
-  sel.forEach(([, k], j) => groups[Math.min(2, Math.floor((3 * j) / Math.max(1, sel.length)))].push([k, j]));
+  const curves = wins.map((w) => D.windowCurve(S.t, signal, w.a, w.b));
+  const xOfPt = (w, i) => (timeMode ? (i / 100) * (w.b - w.a) : i);
   const names = ["early", "middle", "late"];
-  const traces = groups.map((g, gi) => {
+  const traces = names.map((name, gi) => {
     const xs = [], ys = [];
-    for (const [k, j] of g) {
-      const st = S.strokes[k];
-      if (timeMode) {
-        for (let i = st.i0; i <= st.i1; i++) {
-          xs.push(S.t[i] - st.t0);
-          ys.push(signal[i]);
-        }
-      } else {
-        curves[j].forEach((v, i) => {
-          xs.push(i);
-          ys.push(v);
-        });
-      }
+    wins.forEach((w, j) => {
+      if (Math.min(2, Math.floor((3 * j) / wins.length)) !== gi) return;
+      curves[j].forEach((v, i) => {
+        xs.push(xOfPt(w, i));
+        ys.push(v);
+      });
       xs.push(null);
       ys.push(null);
-    }
-    return { x: xs, y: ys, name: `${names[gi]} third`, mode: "lines", line: { color: [c[0], c[2], c[1]][gi], width: 1 }, opacity: 0.45, hoverinfo: "skip", type: "scattergl" };
+    });
+    return { x: xs, y: ys, name: `${name} third`, mode: "lines", line: { color: [c[0], c[2], c[1]][gi], width: 1 }, opacity: 0.45, hoverinfo: "skip", type: "scattergl" };
   });
+  const shapes = [];
   const mean = meanOf(curves);
   if (mean.length) {
     const sd = sdOf(curves, mean);
-    const meanDur = sel.reduce((a, [m]) => a + m.dur, 0) / sel.length;
-    const x = Array.from(mean, (_, i) => (timeMode ? (i / 100) * meanDur : i));
+    const meanDur = wins.reduce((a, w) => a + (w.b - w.a), 0) / wins.length;
+    const scale = (pct) => (timeMode ? (pct / 100) * meanDur : pct);
+    const x = Array.from(mean, (_, i) => scale(i));
     traces.push(
       { x, y: Array.from(mean, (v, i) => v + sd[i]), mode: "lines", line: { width: 0 }, showlegend: false, hoverinfo: "skip" },
       { x, y: Array.from(mean, (v, i) => v - sd[i]), mode: "lines", line: { width: 0 }, fill: "tonexty", fillcolor: "rgba(128,128,128,0.25)", name: "±1 sd", hoverinfo: "skip" },
       { x, y: Array.from(mean), name: "mean", mode: "lines", line: { color: css("--fg"), width: 2.5 }, hovertemplate: `%{y:.2f} ${unit}<extra>mean</extra>` },
     );
+    for (const [key, label, color] of [["catchPos", "catch", c[4]], ["finishPos", "finish", c[3]]]) {
+      const p = D.median(wins.map((w) => w[key]).filter(Number.isFinite));
+      if (!Number.isFinite(p)) continue;
+      shapes.push({ type: "line", x0: scale(p), x1: scale(p), yref: "paper", y0: 0, y1: 1, line: { color, width: 1.5, dash: "dash" }, label: { text: label, textposition: "end", font: { size: 11, color } } });
+    }
   }
-  return { traces, xTitle: timeMode ? "time since catch (s)" : "% of stroke (catch → catch)" };
+  return { traces, shapes };
 }
 
 function renderOverlay(sel) {
-  const s = overlayTraces(S.selCurves, sel, S.disp.surge, "m/s²");
-  Plotly.react("overlaySurge", s.traces, layout({ hovermode: "closest", xaxis: ax({ title: { text: s.xTitle } }), yaxis: ax({ title: { text: "surge m/s²" } }), title: { text: `Boat acceleration · ${sel.length} strokes`, font: { size: 13 } } }), cfg);
-  const r = overlayTraces(S.selRoll, sel, S.disp.roll, "°");
-  Plotly.react("overlayRoll", r.traces, layout({ hovermode: "closest", xaxis: ax({ title: { text: r.xTitle } }), yaxis: ax({ title: { text: "roll ° (+ stbd down)" } }), title: { text: "Roll through the stroke", font: { size: 13 } } }), cfg);
+  const wins = overlayWindows(sel);
+  const timeMode = document.querySelector('input[name="xmode"]:checked').value === "time";
+  const align = $("align").value;
+  const shift = +$("shift").value;
+  const xTitle = (timeMode ? `time from ${align} (s)` : `% of stroke (${align} → ${align})`) + (shift ? `, shifted ${shift > 0 ? "+" : ""}${shift} %` : "");
+  const s = overlayTraces(wins, S.disp.surge, "m/s²");
+  Plotly.react("overlaySurge", s.traces, layout({ hovermode: "closest", shapes: s.shapes, xaxis: ax({ title: { text: xTitle } }), yaxis: ax({ title: { text: "surge m/s²" } }), title: { text: `Boat acceleration · ${wins.length} strokes`, font: { size: 13 } } }), cfg);
+  const r = overlayTraces(wins, S.disp.roll, "°");
+  Plotly.react("overlayRoll", r.traces, layout({ hovermode: "closest", shapes: r.shapes, xaxis: ax({ title: { text: xTitle } }), yaxis: ax({ title: { text: "roll ° (+ stbd down)" } }), title: { text: "Roll through the stroke", font: { size: 13 } } }), cfg);
 }
 
 function renderTrends() {
@@ -477,7 +508,7 @@ function renderRoll(ms) {
 const COLUMNS = [
   ["n", "#", 0], ["t0", "time", "t"], ["rate", "spm", 1], ["dur", "dur s", 2], ["speed", "split", "split"],
   ["dps", "m/stroke", 2], ["catchAcc", "catch m/s²", 2], ["peakAcc", "peak m/s²", 2], ["tPeak", "t peak s", 2],
-  ["drive", "drive s", 2], ["ratio", "drive:rec", 2], ["rollMean", "roll °", 1], ["rollCatch", "roll catch °", 1],
+  ["finishAcc", "finish m/s²", 2], ["drive", "drive s", 2], ["ratio", "drive:rec", 2], ["rollMean", "roll °", 1], ["rollCatch", "roll catch °", 1],
   ["rollRange", "roll range °", 1], ["pitchRange", "pitch range °", 1], ["similarity", "r", 3], ["hr", "hr", 0],
 ];
 
@@ -594,4 +625,9 @@ $("showRaw").addEventListener("change", () => {
   fitSelection();
 });
 document.querySelectorAll('input[name="xmode"]').forEach((r) => r.addEventListener("change", () => renderOverlay(selected())));
+$("align").addEventListener("change", () => S.t && renderOverlay(selected()));
+$("shift").addEventListener("input", () => {
+  $("shiftOut").textContent = `${$("shift").value} %`;
+  if (S.t) renderOverlay(selected());
+});
 $("csv").addEventListener("click", downloadCsv);
